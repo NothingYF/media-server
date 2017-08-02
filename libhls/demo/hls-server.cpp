@@ -1,5 +1,5 @@
 #include "aio-socket.h"
-#include "aio-tcp-transport.h"
+#include "aio-timeout.h"
 #include "mpeg-ps.h"
 #include "mpeg-ts.h"
 #include "hls-m3u8.h"
@@ -36,8 +36,8 @@ struct hls_playlist_t
 	pthread_t t;
 	std::string file;
 
-	void* hls;
-	void* m3u8;
+	hls_media_t* hls;
+	hls_m3u8_t* m3u8;
 	int64_t pts;
 	int64_t last_pts;
 
@@ -82,25 +82,24 @@ static void hls_handler(void* param, const void* data, size_t bytes, int64_t pts
 	printf("new segment: %s\n", name);
 }
 
-static void flv_handler(void* param, int codec, const void* data, size_t bytes, uint32_t pts, uint32_t dts, int flags)
+static int flv_handler(void* param, int codec, const void* data, size_t bytes, uint32_t pts, uint32_t dts, int flags)
 {
+	hls_media_t* hls = (hls_media_t*)param;
+
 	switch (codec)
 	{
 	case FLV_AUDIO_AAC:
-		hls_media_input(param, STREAM_AUDIO_AAC, data, bytes, pts, dts, 0);
-		break;
+		return hls_media_input(hls, STREAM_AUDIO_AAC, data, bytes, pts, dts, 0);
 
 	case FLV_AUDIO_MP3:
-		hls_media_input(param, STREAM_AUDIO_MP3, data, bytes, pts, dts, 0);
-		break;
+		return hls_media_input(hls, STREAM_AUDIO_MP3, data, bytes, pts, dts, 0);
 
 	case FLV_VIDEO_H264:
-		hls_media_input(param, STREAM_VIDEO_H264, data, bytes, pts, dts, 0);
-		break;
+		return hls_media_input(hls, STREAM_VIDEO_H264, data, bytes, pts, dts, 0);
 
 	default:
 		// nothing to do
-		break;
+		return 0;
 	}
 }
 
@@ -181,7 +180,7 @@ static int hls_server_reply(void* session, int code, const char* msg)
 
 static int hls_server_m3u8(void* session, const std::string& path)
 {
-	void* m3u8 = s_playlists.find(path)->second->m3u8;
+	hls_m3u8_t* m3u8 = s_playlists.find(path)->second->m3u8;
 	assert(m3u8);
 
 	void* bundle = http_bundle_alloc(4 * 1024);
@@ -280,17 +279,15 @@ static int hls_server_onhttp(void* http, void* session, const char* method, cons
 void hls_server_test(const char* ip, int port)
 {
 	aio_socket_init(1);
-	aio_tcp_transport_init();
 	void* http = http_server_create(ip, port);
 	http_server_set_handler(http, hls_server_onhttp, http);
 
 	// http process
 	while(aio_socket_process(10000) >= 0)
 	{
-		aio_tcp_transport_recycle();
+		aio_timeout_process();
 	}
 
 	http_server_destroy(http);
-	aio_tcp_transport_clean();
 	aio_socket_clean();
 }

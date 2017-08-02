@@ -7,7 +7,7 @@
 #include <assert.h>
 
 static pthread_t t;
-static void* s_rtmp;
+static rtmp_server_t* s_rtmp;
 static const char* s_file;
 
 static int STDCALL rtmp_server_worker(void* param)
@@ -15,14 +15,22 @@ static int STDCALL rtmp_server_worker(void* param)
 	int r, type;
 	uint32_t timestamp;
 	static uint32_t s_timestamp = 0;
+	static uint64_t s_clock = 0;
 	void* f = flv_reader_create(s_file);
 
-	static unsigned char packet[2 * 1024 * 1024];
+	static unsigned char packet[8 * 1024 * 1024];
 	while ((r = flv_reader_read(f, &type, &timestamp, packet, sizeof(packet))) > 0)
 	{
-		if (timestamp > s_timestamp)
-			system_sleep(timestamp - s_timestamp);
-		s_timestamp = timestamp;
+		assert(r < sizeof(packet));
+		uint64_t clock = system_clock();
+		if (0 == s_clock)
+		{
+			s_clock = clock;
+			s_timestamp = timestamp;
+		}
+
+		if (timestamp - s_timestamp > clock - s_clock)
+			system_sleep(timestamp - s_timestamp - (clock - s_clock));
 
 		if (8 == type)
 		{
@@ -46,17 +54,10 @@ static int STDCALL rtmp_server_worker(void* param)
 static int rtmp_server_send(void* param, const void* header, size_t len, const void* data, size_t bytes)
 {
 	socket_t* socket = (socket_t*)param;
-	if (bytes > 0 && data)
-	{
-		socket_bufvec_t vec[2];
-		socket_setbufvec(vec, 0, (void*)header, len);
-		socket_setbufvec(vec, 1, (void*)data, bytes);
-		return socket_send_v_all_by_time(*socket, vec, 2, 0, 2000);
-	}
-	else
-	{
-		return socket_send_all_by_time(*socket, data, bytes, 0, 2000);
-	}
+	socket_bufvec_t vec[2];
+	socket_setbufvec(vec, 0, (void*)header, len);
+	socket_setbufvec(vec, 1, (void*)data, bytes);
+	return socket_send_v_all_by_time(*socket, vec, bytes > 0 ? 2 : 1, 0, 2000);
 }
 
 static int rtmp_server_onplay(void* param, const char* app, const char* stream, double start, double duration, uint8_t reset)
@@ -103,7 +104,7 @@ void rtmp_server_vod_test(const char* flv)
 	s_file = flv;
 	s_rtmp = rtmp_server_create(&c, &handler);
 
-	static unsigned char packet[8 * 1024 * 1024];
+	static unsigned char packet[2 * 1024 * 1024];
 	while ((r = socket_recv(c, packet, sizeof(packet), 0)) > 0)
 	{
 		r = rtmp_server_input(s_rtmp, packet, r);

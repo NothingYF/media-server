@@ -99,32 +99,30 @@ static int flv_demuxer_audio(struct flv_demuxer_t* flv, const uint8_t* data, siz
 		if (0 == data[1])
 		{
 			mpeg4_aac_audio_specific_config_load(data + 2, bytes - 2, &flv->aac);
-			flv->handler(flv->param, FLV_AUDIO_ASC, data + 2, bytes - 2, timestamp, timestamp, 0);
+			return flv->handler(flv->param, FLV_AUDIO_ASC, data + 2, bytes - 2, timestamp, timestamp, 0);
 		}
 		else
 		{
 			if (0 != flv_demuxer_check_and_alloc(flv, bytes + 7))
-				return ENOMEM;
+				return -ENOMEM;
 
 			// AAC ES stream with ADTS header
 			assert(bytes <= 0x1FFF);
 			assert(bytes > 2 && 0xFFF0 != (((data[2] << 8) | data[3]) & 0xFFF0)); // don't have ADTS
 			mpeg4_aac_adts_save(&flv->aac, (uint16_t)bytes - 2, flv->ptr, 7); // 13-bits
 			memmove(flv->ptr + 7, data + 2, bytes - 2);
-			flv->handler(flv->param, FLV_AUDIO_AAC, flv->ptr, bytes - 2 + 7, timestamp, timestamp, 0);
+			return flv->handler(flv->param, FLV_AUDIO_AAC, flv->ptr, bytes - 2 + 7, timestamp, timestamp, 0);
 		}
 	}
 	else if (FLV_AUDIO_MP3 == flv->audio.format || FLV_AUDIO_MP3_8K == flv->audio.format)
 	{
-		flv->handler(flv->param, flv->audio.format, data + 1, bytes - 1, timestamp, timestamp, 0);
+		return flv->handler(flv->param, flv->audio.format, data + 1, bytes - 1, timestamp, timestamp, 0);
 	}
 	else
 	{
 		// Audio frame data
-		flv->handler(flv->param, flv->audio.format, data + 1, bytes - 1, timestamp, timestamp, 0);
+		return flv->handler(flv->param, flv->audio.format, data + 1, bytes - 1, timestamp, timestamp, 0);
 	}
-
-	return 0;
 }
 
 static int flv_demuxer_video(struct flv_demuxer_t* flv, const uint8_t* data, size_t bytes, uint32_t timestamp)
@@ -146,35 +144,43 @@ static int flv_demuxer_video(struct flv_demuxer_t* flv, const uint8_t* data, siz
 			// AVCDecoderConfigurationRecord
 			assert(bytes > 5 + 7);
 			mpeg4_avc_decoder_configuration_record_load(data + 5, bytes - 5, &flv->avc);
-			flv->handler(flv->param, FLV_VIDEO_AVCC, data + 5, bytes - 5, timestamp, timestamp, 0);
+			return flv->handler(flv->param, FLV_VIDEO_AVCC, data + 5, bytes - 5, timestamp, timestamp, 0);
 		}
-		else
+		else if(1 == packetType)
 		{
 			assert(flv->avc.nalu > 0); // parse AVCDecoderConfigurationRecord failed
 			if (flv->avc.nalu > 0 && bytes > 5) // 5 ==  bytes flv eof
 			{
 				// H.264
 				if (0 != flv_demuxer_check_and_alloc(flv, bytes + 4 * 1024))
-					return ENOMEM;
+					return -ENOMEM;
 
 				assert(flv->avc.nalu <= 4);
 				n = mpeg4_mp4toannexb(&flv->avc, data + 5, bytes - 5, flv->ptr, flv->capacity);
 				if (n <= 0 || n > flv->capacity)
 				{
 					assert(0);
-					return ENOMEM;
+					return -ENOMEM;
 				}
-				flv->handler(flv->param, FLV_VIDEO_H264, flv->ptr, n, timestamp + compositionTime, timestamp, (FLV_VIDEO_KEY_FRAME == flv->video.frame) ? 1 : 0);
+				return flv->handler(flv->param, FLV_VIDEO_H264, flv->ptr, n, timestamp + compositionTime, timestamp, (FLV_VIDEO_KEY_FRAME == flv->video.frame) ? 1 : 0);
 			}
+			return -EINVAL;
+		}
+		else if (2 == packetType)
+		{
+			return 0; // AVC end of sequence (lower level NALU sequence ender is not required or supported)
+		}
+		else
+		{
+			assert(0);
+			return -EINVAL;
 		}
 	}
 	else
 	{
 		// Video frame data
-		flv->handler(flv->param, flv->video.codecid, data + 1, bytes - 1, timestamp, timestamp, (FLV_VIDEO_KEY_FRAME==flv->video.frame) ? 1 : 0);
+		return flv->handler(flv->param, flv->video.codecid, data + 1, bytes - 1, timestamp, timestamp, (FLV_VIDEO_KEY_FRAME==flv->video.frame) ? 1 : 0);
 	}
-
-	return 0;
 }
 
 // http://www.cnblogs.com/musicfans/archive/2012/11/07/2819291.html
